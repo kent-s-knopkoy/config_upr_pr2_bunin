@@ -131,3 +131,38 @@ class DependencyGraph:
         for idx, child in enumerate(children):
             last = idx == len(children) - 1
             dfs(child, "", last, set([root_pkg]))
+
+    def find_reverse_dependencies(self, target: str) -> list[str]:
+        """
+        Возвращает список пакетов, которые зависят (транзитивно) от target.
+        Используем BFS с рекурсией.
+        """
+
+        reverse_graph = {}  # ключ: пакет → список тех, кто от него зависит
+
+        # строим обратную таблицу зависимостей
+        for pkg, deps in self.graph.items():
+            for d in deps:
+                reverse_graph.setdefault(d, []).append(pkg)
+
+        result = []
+        visited = set()
+        queue = [target]
+
+        def bfs():
+            if not queue:
+                return
+
+            cur = queue.pop(0)
+            visited.add(cur)
+
+            if cur in reverse_graph:
+                for parent in reverse_graph[cur]:
+                    if parent not in visited:
+                        result.append(parent)
+                        queue.append(parent)
+
+            bfs()
+
+        bfs()
+        return result
