@@ -3,6 +3,8 @@
 import argparse
 import os
 import sys
+import subprocess
+from pathlib import Path
 
 from apk_parser import ApkRepository
 from dependency_graph import DependencyGraph
@@ -16,19 +18,20 @@ def error(msg: str):
 
 def validate_args(args):
     """
-    Проверка параметров для этапов 1–4.
+    Проверка параметров для этапов 1–5.
     """
 
     if not args.package or len(args.package.strip()) == 0:
         error("Имя пакета не может быть пустым.")
 
-    # Либо репо-url, либо репо-path (тестовый режим)
+    # Либо repo-url, либо repo-path (тестовый режим)
     if args.repo_url and args.repo_path:
         error("Укажите либо --repo-url, либо --repo-path, но не оба сразу.")
 
     if not args.repo_url and not args.repo_path:
         error("Необходимо указать --repo-url (реальный) или --repo-path (тестовый).")
 
+    # тестовый репозиторий — это файл
     if args.repo_path:
         if not os.path.exists(args.repo_path):
             error(f"Файл тестового репозитория не найден: {args.repo_path}")
@@ -37,7 +40,7 @@ def validate_args(args):
     if args.repo_mode not in allowed_modes:
         error(f"Некорректный режим репозитория. Разрешено: {allowed_modes}")
 
-    # Проверка версии (для реального)
+    # Проверка версии (для реального репозитория)
     if args.repo_url:
         if not args.version:
             error("Для реального репозитория необходимо указать --version.")
@@ -45,6 +48,7 @@ def validate_args(args):
         if len(parts) < 2:
             error("Версия должна быть в формате X.Y или X.Y.Z.")
 
+    # Имя файла для картинки
     if not args.output_file.endswith((".png", ".jpg", ".svg")):
         error("Выходной файл должен быть формата .png/.jpg/.svg.")
 
@@ -63,7 +67,37 @@ def print_stage1(args):
         print(f"{key} = {value}")
 
 
-# === Этап 3: построение графа ===
+# === Вспомогательная функция для этапа 5 ===
+
+def save_graph_image(dot_text: str, output_file: str):
+    """
+    Сохраняет DOT-файл и пытается сгенерировать PNG с помощью утилиты dot (Graphviz).
+    Если dot не установлен, хотя бы оставляем .dot.
+    """
+    out_path = Path(output_file)
+    dot_path = out_path.with_suffix(".dot")
+
+    # сохраняем DOT
+    with dot_path.open("w", encoding="utf-8") as f:
+        f.write(dot_text)
+
+    print(f"[INFO] DOT-файл сохранён: {dot_path}")
+
+    # пробуем запустить Graphviz
+    try:
+        subprocess.run(
+            ["dot", "-Tpng", str(dot_path), "-o", str(out_path)],
+            check=True
+        )
+        print(f"[INFO] PNG изображение сохранено: {out_path}")
+    except FileNotFoundError:
+        print("[WARN] Утилита 'dot' (Graphviz) не найдена. "
+              "PNG не создан, используйте DOT-файл для визуализации.")
+    except subprocess.CalledProcessError as e:
+        print(f"[WARN] Ошибка при генерации PNG через dot: {e}")
+
+
+# === Этапы 2–5: работа с реальным репозиторием ===
 
 def build_graph_real_repo(args):
     """
@@ -86,8 +120,8 @@ def build_graph_real_repo(args):
 
     def get_deps(package_name: str, version: str | None):
         """
-        Корень — используем точную версию.
-        Остальные узлы — берём любую доступную версию.
+        Корневой пакет — используем точную версию.
+        Внутренние узлы — берём любую доступную версию.
         """
         if version is not None:
             return repo.get_dependencies(package_name, version)
@@ -102,17 +136,19 @@ def build_graph_real_repo(args):
 
     graph = graph_builder.build(args.package, args.version, get_deps)
 
-    # Еcли пользователь запросил обратные зависимости — Этап 4
+    # Этап 4: обратные зависимости
     if args.reverse:
         print("\n=== REVERSE DEPENDENCIES (REAL REPO) ===")
         rev = graph_builder.find_reverse_dependencies(args.package)
         if not rev:
-            print("(нет)")
+            print("(нет пакетов, зависящих от данного)")
         else:
             for r in rev:
                 print(r)
+        # для отчёта по этапу 4 этого достаточно, PNG можно не строить
         return
 
+    # Этап 3: вывод графа
     print("\n=== DEPENDENCY GRAPH (REAL REPO) ===")
     if args.ascii:
         graph_builder.print_ascii(args.package)
@@ -121,10 +157,16 @@ def build_graph_real_repo(args):
             deps_str = ", ".join(deps) if deps else "(нет)"
             print(f"{pkg}: {deps_str}")
 
+    # Этап 5: DOT + PNG
+    dot_text = graph_builder.to_dot(args.package)
+    save_graph_image(dot_text, args.output_file)
+
+
+# === Этапы 3–5: тестовый репозиторий ===
 
 def build_graph_test_repo(args):
     """
-    Тестовый режим (из файла test_repo.txt).
+    Тестовый режим (из файла test_repo*.txt).
     """
     print("\n[INFO] Режим: Тестовый репозиторий (файл)")
 
@@ -137,7 +179,7 @@ def build_graph_test_repo(args):
 
     graph = graph_builder.build(args.package, args.version, get_deps)
 
-    # Этап 4 — обратные зависимости
+    # Этап 4: обратные зависимости
     if args.reverse:
         print("\n=== REVERSE DEPENDENCIES (TEST REPO) ===")
         rev = graph_builder.find_reverse_dependencies(args.package)
@@ -146,8 +188,10 @@ def build_graph_test_repo(args):
         else:
             for r in rev:
                 print(r)
+        # здесь тоже можно не строить PNG, но если хочешь — сними return
         return
 
+    # Этап 3: прямой граф
     print("\n=== DEPENDENCY GRAPH (TEST REPO) ===")
     if args.ascii:
         graph_builder.print_ascii(args.package)
@@ -156,10 +200,14 @@ def build_graph_test_repo(args):
             deps_str = ", ".join(deps) if deps else "(нет зависимостей)"
             print(f"{pkg}: {deps_str}")
 
+    # Этап 5: DOT + PNG (можно показать красивую картинку даже для тестового графа)
+    dot_text = graph_builder.to_dot(args.package)
+    save_graph_image(dot_text, args.output_file)
+
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Dependency Graph Visualizer – этапы 1–4"
+        description="Dependency Graph Visualizer – этапы 1–5"
     )
 
     parser.add_argument("--package", required=True, help="Имя пакета")
@@ -169,9 +217,9 @@ def main():
                         help="Режим: local/remote/mirror/test")
     parser.add_argument("--version", help="Версия пакета (для реального репо)")
     parser.add_argument("--output-file", default="graph.png",
-                        help="Файл для изображения графа")
+                        help="Файл для изображения графа (PNG/JPG/SVG)")
     parser.add_argument("--ascii", action="store_true",
-                        help="Вывод в ASCII-дереве")
+                        help="Вывод зависимостей в виде ASCII-дерева")
     parser.add_argument("--max-depth", type=int, default=3,
                         help="Максимальная глубина анализа")
     parser.add_argument("--filter",
@@ -185,16 +233,16 @@ def main():
     # Этап 1: вывод параметров
     print_stage1(args)
 
-    # Этап 2 + Этап 3 + Этап 4
+    # Этапы 2–5
     if args.repo_path:
         build_graph_test_repo(args)
     else:
         build_graph_real_repo(args)
 
-    print("\n[INFO] Этап 4 завершён.")
+    print("\n[INFO] Этап 5 завершён.")
 
 
 if __name__ == "__main__":
     main()
 
-#python3 src/cli.py --package C --version TEST --repo-path ./test_repo1.txt --reverse
+#python3 src/cli.py --package A --version TEST --repo-path ./test_repo.txt --max-depth 4 --ascii --output-file graph_test.png

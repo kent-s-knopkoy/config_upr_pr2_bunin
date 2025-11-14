@@ -84,6 +84,37 @@ class DependencyGraph:
         bfs_recursive(queue)
         return self.graph
 
+    def to_dot(self, root_pkg: str) -> str:
+        """
+        Генерирует текстовое представление графа в формате Graphviz DOT.
+        Используется для визуализации (этап 5).
+        """
+        lines: list[str] = []
+        lines.append("digraph dependencies {")
+        lines.append('    rankdir=LR;')  # горизонтальный вид, чтобы красивее
+        lines.append('    node [shape=box, fontsize=10];')
+
+        visited: set[str] = set()
+
+        def dfs(node: str):
+            if node in visited:
+                return
+            visited.add(node)
+
+            # если у узла нет детей, всё равно объявим его в графе
+            if node not in self.graph or not self.graph[node]:
+                lines.append(f'    "{node}";')
+                return
+
+            for dep in self.graph.get(node, []):
+                lines.append(f'    "{node}" -> "{dep}";')
+                dfs(dep)
+
+        dfs(root_pkg)
+
+        lines.append("}")
+        return "\n".join(lines)
+
     # ===== Вывод графа в виде ASCII-дерева =====
 
     def print_ascii(self, root_pkg: str):
